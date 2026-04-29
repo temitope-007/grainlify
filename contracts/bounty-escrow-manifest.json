@@ -64,7 +64,8 @@
           "Added get_whitelist_count and get_blocklist_count view functions for O(1) total-count queries",
           "Added ParticipantFilterQueried audit event emitted on every query_whitelist/query_blocklist call for off-chain audit trails",
           "Limit argument silently capped at MAX_PARTICIPANT_FILTER_PAGE_SIZE (50) to bound per-call ledger cost",
-          "Added ParticipantListSchemaVersion storage key initialized on contract init for upgrade-safe storage versioning"
+          "Added ParticipantListSchemaVersion storage key initialized on contract init for upgrade-safe storage versioning",
+          "Added get_participant_schema_version view and ParticipantListSchemaVersionSet audit event for upgrade verification"
         ]
       },
       {
@@ -401,6 +402,18 @@
         "returns": {
           "type": "u32",
           "description": "Total count of blocklisted addresses"
+        },
+        "authorization": "any",
+        "pausable": false,
+        "gas_estimate": "low"
+      },
+      {
+        "name": "get_participant_schema_version",
+        "description": "Return participant list storage schema version initialized during init()",
+        "parameters": [],
+        "returns": {
+          "type": "u32",
+          "description": "Participant list storage schema version; 1 for the current whitelist/blocklist index layout"
         },
         "authorization": "any",
         "pausable": false,
@@ -1496,7 +1509,7 @@
       {
         "name": "ParticipantListSchemaVersion",
         "type": "instance",
-        "description": "Upgrade-safe marker for participant list (whitelist/blocklist) storage semantics. Initialized to 1 during init().",
+        "description": "Upgrade-safe marker for participant list (whitelist/blocklist) storage semantics. Initialized to 1 during init(), exposed through get_participant_schema_version, and audited through ParticipantListSchemaVersionSet.",
         "data_structure": "u32"
       },
       {
@@ -1945,6 +1958,33 @@
           }
         ],
         "trigger": "Every call to query_whitelist or query_blocklist"
+      },
+      {
+        "name": "ParticipantListSchemaVersionSet",
+        "description": "Emitted during init() when the participant list schema version marker is written",
+        "data": [
+          {
+            "name": "version",
+            "type": "u32",
+            "description": "Event payload schema version"
+          },
+          {
+            "name": "schema_version",
+            "type": "u32",
+            "description": "Participant list storage schema version"
+          },
+          {
+            "name": "set_by",
+            "type": "Address",
+            "description": "Admin that initialized the contract"
+          },
+          {
+            "name": "timestamp",
+            "type": "u64",
+            "description": "Ledger timestamp"
+          }
+        ],
+        "trigger": "Contract init()"
       }
     ]
   },

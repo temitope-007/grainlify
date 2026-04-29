@@ -999,6 +999,35 @@ pub fn emit_participant_filter_queried(env: &Env, event: ParticipantFilterQuerie
     env.events().publish(topics, event);
 }
 
+/// Emitted once during `init()` to record the participant list storage schema
+/// version. This covers the allowlist/blocklist index layout used by the
+/// paginated participant filter views.
+///
+/// ### Topics
+/// | Index | Value |
+/// |-------|-------|
+/// | 0 | `"pf_schema"` |
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParticipantListSchemaVersionSet {
+    pub version: u32,
+    /// Participant list schema version written to instance storage.
+    pub schema_version: u32,
+    /// Admin that initialized the contract.
+    pub set_by: Address,
+    /// Ledger timestamp.
+    pub timestamp: u64,
+}
+
+/// Emit [`ParticipantListSchemaVersionSet`].
+pub fn emit_participant_list_schema_version_set(
+    env: &Env,
+    event: ParticipantListSchemaVersionSet,
+) {
+    let topics = (symbol_short!("pf_schema"),);
+    env.events().publish(topics, event);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // RISK FLAG EVENTS
 // ═══════════════════════════════════════════════════════════════════════════════

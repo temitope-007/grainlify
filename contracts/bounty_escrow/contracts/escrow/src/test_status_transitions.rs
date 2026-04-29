@@ -245,6 +245,87 @@ fn test_refund_eligibility_schema_version_is_initialized() {
 }
 
 #[test]
+fn test_participant_filter_schema_version_is_initialized_and_audited() {
+    let setup = TestSetup::new();
+
+    assert_eq!(setup.escrow.get_participant_schema_version(), 1);
+    assert!(has_event_topic(&setup.env, "pf_schema"));
+}
+
+#[test]
+fn test_participant_filter_whitelist_pagination_counts_and_has_more() {
+    let setup = TestSetup::new();
+    let first = Address::generate(&setup.env);
+    let second = Address::generate(&setup.env);
+    let third = Address::generate(&setup.env);
+
+    setup.escrow.set_whitelist_entry(&first, &true);
+    setup.escrow.set_whitelist_entry(&second, &true);
+    setup.escrow.set_whitelist_entry(&third, &true);
+    setup.escrow.set_whitelist_entry(&first, &true);
+
+    assert_eq!(setup.escrow.get_whitelist_count(), 3);
+
+    let page1 = setup.escrow.query_whitelist(&0, &2);
+    assert_eq!(page1.items.len(), 2);
+    assert_eq!(page1.total, 3);
+    assert_eq!(page1.offset, 0);
+    assert!(page1.has_more);
+
+    let page2 = setup.escrow.query_whitelist(&2, &2);
+    assert_eq!(page2.items.len(), 1);
+    assert_eq!(page2.total, 3);
+    assert_eq!(page2.offset, 2);
+    assert!(!page2.has_more);
+    assert!(has_event_topic(&setup.env, "pf_query"));
+}
+
+#[test]
+fn test_participant_filter_pagination_caps_limit_and_handles_extreme_offsets() {
+    let setup = TestSetup::new();
+
+    for _ in 0..55 {
+        let address = Address::generate(&setup.env);
+        setup.escrow.set_whitelist_entry(&address, &true);
+    }
+
+    let capped = setup.escrow.query_whitelist(&0, &999);
+    assert_eq!(capped.items.len(), 50);
+    assert_eq!(capped.total, 55);
+    assert!(capped.has_more);
+
+    let empty = setup.escrow.query_whitelist(&u32::MAX, &10);
+    assert_eq!(empty.items.len(), 0);
+    assert_eq!(empty.total, 55);
+    assert_eq!(empty.offset, u32::MAX);
+    assert!(!empty.has_more);
+
+    let zero_limit = setup.escrow.query_whitelist(&0, &0);
+    assert_eq!(zero_limit.items.len(), 0);
+    assert_eq!(zero_limit.total, 55);
+    assert!(zero_limit.has_more);
+}
+
+#[test]
+fn test_participant_filter_blocklist_pagination_removal_and_audit_event() {
+    let setup = TestSetup::new();
+    let first = Address::generate(&setup.env);
+    let second = Address::generate(&setup.env);
+
+    setup.escrow.set_blocklist_entry(&first, &true);
+    setup.escrow.set_blocklist_entry(&second, &true);
+    setup.escrow.set_blocklist_entry(&first, &false);
+
+    assert_eq!(setup.escrow.get_blocklist_count(), 1);
+
+    let page = setup.escrow.query_blocklist(&0, &10);
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.total, 1);
+    assert!(!page.has_more);
+    assert!(has_event_topic(&setup.env, "pf_query"));
+}
+
+#[test]
 fn test_refund_approval_audit_events_and_consumption() {
     let setup = TestSetup::new();
     let bounty_id = 103;

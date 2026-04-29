@@ -1496,6 +1496,15 @@ impl BountyEscrowContract {
                 timestamp: env.ledger().timestamp(),
             },
         );
+        events::emit_participant_list_schema_version_set(
+            &env,
+            events::ParticipantListSchemaVersionSet {
+                version: EVENT_VERSION_V2,
+                schema_version: PARTICIPANT_LIST_SCHEMA_VERSION_V1,
+                set_by: admin.clone(),
+                timestamp: env.ledger().timestamp(),
+            },
+        );
 
         // Upgrade-safe high-value timelock config schema version initialization.
         env.storage().instance().set(
@@ -3107,6 +3116,17 @@ impl BountyEscrowContract {
         Self::read_participant_index(&env, DataKey::BlocklistIndex).len()
     }
 
+    /// Return the participant list storage schema version initialized during `init()`.
+    ///
+    /// Off-chain indexers and upgrade tooling can use this view to verify the
+    /// allowlist/blocklist index layout expected by paginated filter queries.
+    pub fn get_participant_schema_version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::ParticipantListSchemaVersion)
+            .unwrap_or(0)
+    }
+
     /// Return a deterministic page of allowlisted addresses with pagination metadata.
     ///
     /// `limit` is silently capped at `MAX_PARTICIPANT_FILTER_PAGE_SIZE` (50).
@@ -3117,7 +3137,7 @@ impl BountyEscrowContract {
         let total = values.len();
         let items = Self::paginate_addresses(&env, values, offset, effective_limit);
         let result_count = items.len();
-        let has_more = (offset + result_count) < total;
+        let has_more = offset.saturating_add(result_count) < total;
         emit_participant_filter_queried(
             &env,
             ParticipantFilterQueried {
@@ -3147,7 +3167,7 @@ impl BountyEscrowContract {
         let total = values.len();
         let items = Self::paginate_addresses(&env, values, offset, effective_limit);
         let result_count = items.len();
-        let has_more = (offset + result_count) < total;
+        let has_more = offset.saturating_add(result_count) < total;
         emit_participant_filter_queried(
             &env,
             ParticipantFilterQueried {
