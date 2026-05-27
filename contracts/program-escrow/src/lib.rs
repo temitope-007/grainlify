@@ -2648,6 +2648,10 @@ impl ProgramEscrowContract {
         }
 
         // 2. Operational state: paused
+        //    PRECEDENCE LAYER 1 (highest): Pause / maintenance mode.
+        //    Note: lock_program_funds does not invoke the circuit breaker;
+        //    the circuit breaker guards only payout/release operations.
+        //    See docs/program-escrow/CIRCUIT_BREAKER_ENFORCEMENT.md §Full Guard Chain.
         if Self::check_paused(&env, symbol_short!("lock")) {
             panic!("Funds Paused");
         }
@@ -4631,6 +4635,12 @@ impl ProgramEscrowContract {
             None => panic!("Program not initialized"),
         };
 
+        // 3. Operational state: paused
+        //    PRECEDENCE LAYER 1 (highest): Pause / maintenance mode.
+        //    Checked BEFORE read-only mode and circuit breaker so that an
+        //    operator's explicit emergency stop is always honoured first,
+        //    regardless of automated circuit-breaker state.
+        //    See docs/program-escrow/CIRCUIT_BREAKER_ENFORCEMENT.md §Layer Definitions.
         if Self::check_paused(&env, symbol_short!("release")) {
             panic!("Funds Paused");
         }
@@ -4719,6 +4729,20 @@ impl ProgramEscrowContract {
             panic!("Insufficient balance");
         }
 
+        // 7. Circuit breaker check
+        //    PRECEDENCE LAYER 3 (lowest): Circuit breaker.
+        //    Only reached after pause (layer 1) and read-only mode (layer 2)
+        //    have been cleared. The circuit breaker is an automated guard
+        //    against cascading failures and must not override operator
+        //    pause/read-only controls.
+        //    See docs/program-escrow/CIRCUIT_BREAKER_ENFORCEMENT.md §Layer Definitions.
+        if let Err(err_code) = error_recovery::check_and_allow_with_thresholds(&env) {
+            reentrancy_guard::clear_entered(&env);
+            if err_code == error_recovery::ERR_CIRCUIT_OPEN {
+                panic!("Circuit breaker is OPEN");
+            } else {
+                panic!("Operation rejected by circuit breaker");
+            }
         // 8. Pre-validate fees for every entry BEFORE any transfer.
         //    This guarantees atomicity: if any fee would consume an entire payout
         //    the whole batch is rejected with no state changes.
@@ -4967,6 +4991,9 @@ impl ProgramEscrowContract {
                 });
 
         // 3. Operational state: paused
+        //    PRECEDENCE LAYER 1 (highest): Pause / maintenance mode.
+        //    Checked BEFORE circuit breaker so operator controls always win.
+        //    See docs/program-escrow/CIRCUIT_BREAKER_ENFORCEMENT.md §Layer Definitions.
         if Self::check_paused(&env, symbol_short!("release")) {
             panic!("Funds Paused");
         }
@@ -5032,6 +5059,19 @@ impl ProgramEscrowContract {
 
         if amount > program_data.remaining_balance {
             panic!("Insufficient balance");
+        }
+
+        // 7. Circuit breaker check
+        //    PRECEDENCE LAYER 3 (lowest): Circuit breaker.
+        //    Only reached after pause (layer 1) and read-only mode (layer 2).
+        //    See docs/program-escrow/CIRCUIT_BREAKER_ENFORCEMENT.md §Layer Definitions.
+        if let Err(err_code) = error_recovery::check_and_allow_with_thresholds(&env) {
+            reentrancy_guard::clear_entered(&env);
+            if err_code == error_recovery::ERR_CIRCUIT_OPEN {
+                panic!("Circuit breaker is OPEN");
+            } else {
+                panic!("Operation rejected by circuit breaker");
+            }
         }
 
         let contract_address = env.current_contract_address();
@@ -6549,3 +6589,4 @@ mod test_pagination;
 mod rbac_tests;
 #[cfg(test)]
 mod test_batch_receipts;
+#[cfg(test)] mod test_circuit_breaker_enforcement;
