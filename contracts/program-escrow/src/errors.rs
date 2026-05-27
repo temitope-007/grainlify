@@ -25,6 +25,9 @@
 
 use soroban_sdk::contracterror;
 
+/// Stable error code returned when a Draft program is used for Active-only operations.
+pub const ERR_PROGRAM_NOT_ACTIVE: u32 = ContractError::ProgramNotActive as u32;
+
 /// Canonical error enum for all public program-escrow entrypoints.
 ///
 /// This enum consolidates all possible errors that can be returned by the

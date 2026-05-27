@@ -153,6 +153,7 @@ const BATCH_FUNDS_LOCKED: Symbol = symbol_short!("BatLck");
 const BATCH_FUNDS_RELEASED: Symbol = symbol_short!("BatRel");
 const BATCH_PAYOUT: Symbol = symbol_short!("BatchPay");
 const PAYOUT: Symbol = symbol_short!("Payout");
+const PROGRAM_PUBLISHED: Symbol = symbol_short!("PrgPub");
 const EVENT_VERSION_V2: u32 = 2;
 const PAUSE_STATE_CHANGED: Symbol = symbol_short!("PauseSt");
 const PAUSE_STATE_CHANGED_V2: Symbol = symbol_short!("PauseStV2");
@@ -574,7 +575,8 @@ pub struct ControllerRotationCancelledEvent {
 pub struct ProgramPublishedEvent {
     pub version: u32,
     pub program_id: String,
-    pub published_at: u64,
+    pub publisher: Address,
+    pub timestamp: u64,
 }
 
 #[contracttype]
@@ -2104,6 +2106,16 @@ impl ProgramEscrowContract {
         program_data
     }
 
+    /// Require the initialized program to be Active before moving escrowed funds.
+    ///
+    /// # Panics
+    /// Panics with `ERR_PROGRAM_NOT_ACTIVE` (107) when the program is still Draft.
+    fn require_active_program(program_data: &ProgramData) {
+        if program_data.status != ProgramStatus::Active {
+            panic!("{}", errors::ERR_PROGRAM_NOT_ACTIVE);
+        }
+    }
+
     pub fn publish_program(env: Env) -> ProgramData {
         if !env.storage().instance().has(&PROGRAM_DATA) {
             panic!("Program not initialized");
@@ -2119,13 +2131,14 @@ impl ProgramEscrowContract {
         program_data.status = ProgramStatus::Active;
         env.storage().instance().set(&PROGRAM_DATA, &program_data);
 
-        // Emit ProgramPublished event
+        // Emit ProgramPublished after the status write so indexers only see committed transitions.
         env.events().publish(
-            (symbol_short!("PrgPub"),),
+            (PROGRAM_PUBLISHED,),
             ProgramPublishedEvent {
                 version: EVENT_VERSION_V2,
                 program_id: program_data.program_id.clone(),
-                published_at: env.ledger().timestamp(),
+                publisher: program_data.authorized_payout_key.clone(),
+                timestamp: env.ledger().timestamp(),
             },
         );
 
@@ -2511,16 +2524,15 @@ impl ProgramEscrowContract {
         Ok(batch_size)
     }
 
-    /// Fee from basis points using ceiling division (matches bounty escrow).
+    /// Fee from basis points using ceiling division so fractional fees do not leave dust.
     fn calculate_fee(amount: i128, fee_rate: i128) -> i128 {
         if fee_rate == 0 || amount == 0 {
             return 0;
         }
-        // Floor division: fee = floor(amount * rate / BASIS_POINTS)
-        let numerator = amount.checked_mul(fee_rate).unwrap_or(0);
-        if numerator == 0 {
-            return 0;
-        }
+        let numerator = amount
+            .checked_mul(fee_rate)
+            .and_then(|n| n.checked_add(BASIS_POINTS - 1))
+            .unwrap_or_else(|| panic!("Fee calculation overflow"));
         numerator / BASIS_POINTS
     }
 
@@ -4694,6 +4706,9 @@ impl ProgramEscrowContract {
             None => panic!("Program not initialized"),
         };
 
+        // 2b. Program lifecycle: Draft programs must be published before payouts.
+        Self::require_active_program(&program_data);
+
         // 3. Operational state: paused
         //    PRECEDENCE LAYER 1 (highest): Pause / maintenance mode.
         //    Checked BEFORE read-only mode and circuit breaker so that an
@@ -5048,6 +5063,9 @@ impl ProgramEscrowContract {
                 .unwrap_or_else(|| {
                     panic!("Program not initialized")
                 });
+
+        // 2b. Program lifecycle: Draft programs must be published before payouts.
+        Self::require_active_program(&program_data);
 
         // 3. Operational state: paused
         //    PRECEDENCE LAYER 1 (highest): Pause / maintenance mode.

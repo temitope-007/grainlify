@@ -55,6 +55,123 @@ fn assert_event_data_has_v2_tag(env: &Env, data: &Val) {
 }
 
 #[test]
+#[should_panic(expected = "107")]
+fn test_single_payout_rejects_draft_program() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, ProgramEscrowContract);
+    let client = ProgramEscrowContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_id = sac.address();
+    let program_id = String::from_str(&env, "draft-single");
+
+    client.init_program(&program_id, &admin, &token_id, &admin, &None, &None);
+    let recipient = Address::generate(&env);
+    client.single_payout(&recipient, &1, &None);
+}
+
+#[test]
+#[should_panic(expected = "107")]
+fn test_batch_payout_rejects_draft_program() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, ProgramEscrowContract);
+    let client = ProgramEscrowContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_id = sac.address();
+    let program_id = String::from_str(&env, "draft-batch");
+
+    client.init_program(&program_id, &admin, &token_id, &admin, &None, &None);
+    let recipient = Address::generate(&env);
+    let recipients = vec![&env, recipient];
+    let amounts = vec![&env, 1_i128];
+    client.batch_payout(&recipients, &amounts, &None);
+}
+
+#[test]
+fn test_legacy_active_program_payouts_still_work() {
+    let env = Env::default();
+    let (client, _admin, token_client, _token_admin) = setup_program(&env, 10_000);
+
+    let single_recipient = Address::generate(&env);
+    client.single_payout(&single_recipient, &1_000, &None);
+
+    let batch_recipient = Address::generate(&env);
+    let recipients = vec![&env, batch_recipient.clone()];
+    let amounts = vec![&env, 2_000_i128];
+    let data = client.batch_payout(&recipients, &amounts, &None);
+
+    assert_eq!(token_client.balance(&single_recipient), 1_000);
+    assert_eq!(token_client.balance(&batch_recipient), 2_000);
+    assert_eq!(data.remaining_balance, 7_000);
+    assert_eq!(data.status, ProgramStatus::Active);
+}
+
+#[test]
+fn test_program_published_event_contains_required_fields() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(12345);
+
+    let contract_id = env.register_contract(None, ProgramEscrowContract);
+    let client = ProgramEscrowContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_id = sac.address();
+    let program_id = String::from_str(&env, "publish-event");
+
+    client.init_program(&program_id, &admin, &token_id, &admin, &None, &None);
+    let before = env.events().all().len();
+    client.publish_program();
+
+    let events = env.events().all();
+    let (_, topics, data) = events.get(before).expect("publish event should be emitted");
+    assert_eq!(topics, (PROGRAM_PUBLISHED,).into_val(&env));
+
+    let event = ProgramPublishedEvent::try_from_val(&env, &data).expect("event payload should decode");
+    assert_eq!(event.program_id, program_id);
+    assert_eq!(event.publisher, admin);
+    assert_eq!(event.timestamp, 12345);
+}
+
+#[test]
+fn test_fee_ceiling_division_avoids_dust_for_odd_amount() {
+    let env = Env::default();
+    let (client, _admin, token_client, _token_admin) = setup_program(&env, 2_000);
+    let fee_recipient = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    client.update_fee_config(&None, &Some(100), &None, &None, &Some(fee_recipient.clone()), &Some(true));
+    client.single_payout(&recipient, &1001, &None);
+
+    assert_eq!(token_client.balance(&fee_recipient), 11);
+    assert_eq!(token_client.balance(&recipient), 990);
+    assert_eq!(token_client.balance(&fee_recipient) + token_client.balance(&recipient), 1001);
+}
+
+#[test]
+fn test_fee_ceiling_division_boundary_max_rate() {
+    let env = Env::default();
+    let (client, _admin, token_client, _token_admin) = setup_program(&env, 10_000);
+    let fee_recipient = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    client.update_fee_config(&None, &Some(1000), &None, &None, &Some(fee_recipient.clone()), &Some(true));
+    client.single_payout(&recipient, &1001, &None);
+
+    assert_eq!(token_client.balance(&fee_recipient), 101);
+    assert_eq!(token_client.balance(&recipient), 900);
+    assert_eq!(token_client.balance(&fee_recipient) + token_client.balance(&recipient), 1001);
+}
+
+#[test]
 fn test_init_program_and_event() {
     let env = Env::default();
     env.mock_all_auths();
