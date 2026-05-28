@@ -1577,6 +1577,10 @@ pub const SPEND_LIMIT_SCHEMA_VERSION_V1: u32 = 1;
 /// detect schema mismatches on legacy deployments.
 pub const PAUSE_SCHEMA_VERSION_V1: u32 = 1;
 
+/// Current circuit breaker storage schema version.
+/// V2 adds compact per-program archives for pruned failure logs.
+pub const CIRCUIT_BREAKER_SCHEMA_VERSION_V2: u32 = 2;
+
 // Idempotency key constraints
 const MAX_IDEMPOTENCY_KEY_LENGTH: u32 = 128; // Maximum 128 characters
 const MIN_IDEMPOTENCY_KEY_LENGTH: u32 = 1; // Minimum 1 character (non-empty)
@@ -2265,7 +2269,7 @@ impl ProgramEscrowContract {
                 .set(&DataKey::PauseSchemaVersion, &PAUSE_SCHEMA_VERSION_V1);
         }
 
-        // Write upgrade-safe circuit-breaker schema version marker (v1).
+        // Write upgrade-safe circuit-breaker schema version marker.
         // Ensures future upgrades to circuit breaker storage layout are handled safely.
         if !env
             .storage()
@@ -2274,7 +2278,7 @@ impl ProgramEscrowContract {
         {
             env.storage()
                 .instance()
-                .set(&DataKey::CircuitBreakerSchemaVersion, &1u32);
+                .set(&DataKey::CircuitBreakerSchemaVersion, &CIRCUIT_BREAKER_SCHEMA_VERSION_V2);
             // Initialize circuit breaker admin to the authorized_payout_key (trusted backend)
             error_recovery::set_circuit_admin(&env, authorized_payout_key.clone(), None);
             // Initialize with default configuration
@@ -2292,7 +2296,7 @@ impl ProgramEscrowContract {
                 (
                     symbol_short!("cb_init"),
                     env.ledger().timestamp(),
-                    1u32, // schema version
+                    CIRCUIT_BREAKER_SCHEMA_VERSION_V2,
                 ),
             );
         }
@@ -4331,6 +4335,25 @@ impl ProgramEscrowContract {
     /// Return the full circuit breaker error log (last N entries).
     pub fn get_circuit_error_log(env: Env) -> soroban_sdk::Vec<error_recovery::ErrorEntry> {
         error_recovery::get_error_log(&env)
+    }
+
+    /// Archive hot circuit breaker failure logs for a program.
+    ///
+    /// Requires authorization from the registered circuit breaker admin. Archived
+    /// timestamps are stored as compact offsets to reduce persistent storage.
+    pub fn archive_circuit_breaker_logs(
+        env: Env,
+        program_id: String,
+    ) -> error_recovery::CompactFailureArchive {
+        error_recovery::archive_circuit_breaker_logs(&env, program_id)
+    }
+
+    /// Return the compact archived circuit breaker failures for a program.
+    pub fn get_circuit_failure_archive(
+        env: Env,
+        program_id: String,
+    ) -> error_recovery::CompactFailureArchive {
+        error_recovery::get_failure_archive(&env, program_id)
     }
 
     /// Emergency-open the circuit breaker (circuit admin only).
