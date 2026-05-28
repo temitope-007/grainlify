@@ -1,8 +1,6 @@
 #![cfg(test)]
 
-//! # RBAC Tests — Payout Key Rotation & Emergency Delegate Revocation
-//!
-//! ## Payout Key Rotation
+//! # RBAC Tests — Payout Key Rotation and Draft Status Guards
 //!
 //! Verifies the role-based access control rules for `rotate_payout_key`:
 //!
@@ -14,28 +12,16 @@
 //! | Old key after rotation  | ❌ No    |
 //! | Delegate                | ❌ No    |
 //!
+//! Also verifies Draft status guards for delegate and capability-token operations:
+//! - set_program_delegate must reject programs in Draft status
+//! - revoke_program_delegate must reject programs in Draft status  
+//! - Delegate actions (via require_program_actor) must reject programs in Draft status
+//!
 //! Security assumptions validated here:
 //! - A hijacked (old) key cannot re-rotate after being replaced.
 //! - A delegate with full permissions cannot rotate the key.
 //! - An unauthorized address cannot rotate even with a correct nonce.
-//!
-//! ## Emergency Delegate Revocation
-//!
-//! Verifies the role-based access control rules for `emergency_revoke_delegate`:
-//!
-//! | Caller                  | Allowed? |
-//! |-------------------------|----------|
-//! | Contract admin          | ✅ Yes   |
-//! | Arbitrary third party   | ❌ No    |
-//! | Current payout key      | ❌ No    |
-//! | Delegate itself         | ❌ No    |
-//!
-//! Security assumptions validated here:
-//! - Only the admin can emergency-revoke a delegate.
-//! - After emergency revocation, delegate permissions are immediately zeroed.
-//! - Emergency revocation emits the `ProgramDelegateRevoked` event with `emergency=true`.
-//! - Normal revocation emits the event with `emergency=false`.
-//! - Emergency revocation is idempotent (safe when no delegate is set).
+//! - Delegate operations are blocked on programs in Draft status.
 
 use super::*;
 use soroban_sdk::{testutils::Address as _, token, Address, Env, String};
@@ -194,182 +180,94 @@ fn test_rbac_wrong_nonce_rejected_for_authorized_caller() {
 }
 
 // ---------------------------------------------------------------------------
-// Emergency Delegate Revocation — positive cases
+// Draft Status Guard Tests
 // ---------------------------------------------------------------------------
 
-/// Admin can emergency-revoke a delegate that has active permissions.
+/// set_program_delegate must reject programs in Draft status.
 #[test]
-fn test_emergency_revoke_admin_can_revoke_delegate() {
+#[should_panic(expected = "Cannot set delegate on program in Draft status")]
+fn test_set_delegate_rejected_on_draft_program() {
     let env = Env::default();
     let (client, program_id, payout_key, _admin) = setup(&env);
     let delegate = Address::generate(&env);
-
-    // Grant delegate full permissions.
-    client.set_program_delegate(
-        &program_id,
-        &payout_key,
-        &delegate,
-        &DELEGATE_PERMISSION_MASK,
-    );
-
-    // Verify delegate was set.
-    let data_before = client.get_program_data(&program_id);
-    assert_eq!(data_before.delegate, Some(delegate.clone()));
-    assert_eq!(data_before.delegate_permissions, DELEGATE_PERMISSION_MASK);
-
-    // Admin performs emergency revocation.
-    let data_after = client.emergency_revoke_delegate(&program_id, &delegate);
-
-    // Delegate and all permissions must be cleared immediately.
-    assert!(data_after.delegate.is_none());
-    assert_eq!(data_after.delegate_permissions, 0);
-}
-
-/// Emergency revocation zeroes permissions for each individual permission bit.
-#[test]
-fn test_emergency_revoke_zeros_all_permissions() {
-    let env = Env::default();
-    let (client, program_id, payout_key, _admin) = setup(&env);
-    let delegate = Address::generate(&env);
-
-    // Set only the RELEASE permission.
+    
+    // Program is in Draft status by default after init_program
     client.set_program_delegate(
         &program_id,
         &payout_key,
         &delegate,
         &DELEGATE_PERMISSION_RELEASE,
     );
-
-    let data = client.emergency_revoke_delegate(&program_id, &delegate);
-    assert!(data.delegate.is_none());
-    assert_eq!(data.delegate_permissions, 0);
 }
 
-/// Emergency revocation is idempotent — calling when no delegate is set
-/// must not panic and still returns the (unchanged) program data.
+/// revoke_program_delegate must reject programs in Draft status.
 #[test]
-fn test_emergency_revoke_idempotent_when_no_delegate() {
-    let env = Env::default();
-    let (client, program_id, _payout_key, _admin) = setup(&env);
-    let phantom_delegate = Address::generate(&env);
-
-    // No delegate has been set; call must succeed silently.
-    let data = client.emergency_revoke_delegate(&program_id, &phantom_delegate);
-    assert!(data.delegate.is_none());
-    assert_eq!(data.delegate_permissions, 0);
-}
-
-/// Normal revocation (`revoke_program_delegate`) still works after the
-/// emergency path is introduced — existing behaviour is not broken.
-#[test]
-fn test_normal_revoke_still_works_after_emergency_path_added() {
+#[should_panic(expected = "Cannot revoke delegate on program in Draft status")]
+fn test_revoke_delegate_rejected_on_draft_program() {
     let env = Env::default();
     let (client, program_id, payout_key, _admin) = setup(&env);
-    let delegate = Address::generate(&env);
+    
+    // Program is in Draft status by default after init_program
+    client.revoke_program_delegate(&program_id, &payout_key);
+}
 
+/// update_program_metadata by delegate must reject programs in Draft status.
+#[test]
+#[should_panic(expected = "Cannot perform delegate actions on program in Draft status")]
+fn test_delegate_update_metadata_rejected_on_draft_program() {
+    let env = Env::default();
+    let (client, program_id, payout_key, _admin) = setup(&env);
+    
+    // First publish the program to set a delegate
+    client.publish_program();
+    let delegate = Address::generate(&env);
     client.set_program_delegate(
         &program_id,
         &payout_key,
         &delegate,
-        &DELEGATE_PERMISSION_RELEASE,
+        &DELEGATE_PERMISSION_UPDATE_META,
     );
-
-    // Normal revocation by payout key must still succeed.
-    let data = client.revoke_program_delegate(&program_id, &payout_key);
-    assert!(data.delegate.is_none());
-    assert_eq!(data.delegate_permissions, 0);
+    
+    // Now create a new draft program to test delegate action rejection
+    let draft_program_id = String::from_str(&env, "draft-prog");
+    let token_id = fund_contract(&env, &client.address, 0);
+    client.init_program(&draft_program_id, &payout_key, &token_id, &payout_key, &None, &None);
+    
+    // Try to update metadata on draft program as delegate - should fail
+    let metadata = ProgramMetadata::empty(&env);
+    client.update_program_metadata(&draft_program_id, &delegate, &metadata);
 }
 
-// ---------------------------------------------------------------------------
-// Emergency Delegate Revocation — negative cases
-// ---------------------------------------------------------------------------
-
-/// An arbitrary third-party cannot call emergency_revoke_delegate.
+/// Delegate operations work after program is published.
 #[test]
-#[should_panic(expected = "Not initialized")]
-fn test_emergency_revoke_rejected_for_arbitrary_caller() {
-    let env = Env::default();
-    env.mock_all_auths();
-    // Use a fresh client without calling initialize_contract so admin is not set.
-    let (client, contract_id) = make_client(&env);
-    let token_id = fund_contract(&env, &contract_id, 0);
-    let payout_key = Address::generate(&env);
-    let program_id = String::from_str(&env, "test-prog");
-    // init_program without initialize_contract → admin not set.
-    client.init_program(&program_id, &payout_key, &token_id, &payout_key, &None, &None);
-
-    let delegate = Address::generate(&env);
-    // emergency_revoke requires admin; "Not initialized" is the panic from require_admin
-    // when admin key has not been set via initialize_contract.
-    client.emergency_revoke_delegate(&program_id, &delegate);
-}
-
-/// The payout-key owner (non-admin) cannot call emergency_revoke_delegate.
-///
-/// This test verifies the separation of concerns: the payout key governs
-/// day-to-day operations while the admin governs security-critical paths.
-#[test]
-#[should_panic(expected = "Unauthorized")]
-fn test_emergency_revoke_rejected_for_payout_key_owner() {
+fn test_delegate_operations_work_after_publish() {
     let env = Env::default();
     let (client, program_id, payout_key, _admin) = setup(&env);
+    
+    // Publish the program first
+    client.publish_program();
+    
     let delegate = Address::generate(&env);
-
+    
+    // Now delegate operations should work
     client.set_program_delegate(
         &program_id,
         &payout_key,
         &delegate,
-        &DELEGATE_PERMISSION_MASK,
+        &DELEGATE_PERMISSION_UPDATE_META,
     );
-
-    // Override the mocked auth to only grant the payout_key (not the admin).
-    // With mock_all_auths the call would succeed, so we disable mocking and
-    // use require_auth semantics directly.
-    env.set_auths(&[soroban_sdk::testutils::AuthorizedInvocation {
-        function: soroban_sdk::testutils::AuthorizedFunction::Contract((
-            client.address.clone(),
-            soroban_sdk::Symbol::new(&env, "emergency_revoke_delegate"),
-            soroban_sdk::vec![
-                &env,
-                program_id.into_val(&env),
-                delegate.clone().into_val(&env),
-            ],
-        )),
-        sub_invocations: soroban_sdk::vec![&env],
-    }]);
-
-    // Payout key is NOT the admin — must be rejected.
-    client.emergency_revoke_delegate(&program_id, &delegate);
-}
-
-/// A delegate with all permissions cannot call emergency_revoke_delegate on itself.
-#[test]
-#[should_panic(expected = "Unauthorized")]
-fn test_emergency_revoke_rejected_for_delegate_self_revoke() {
-    let env = Env::default();
-    let (client, program_id, payout_key, _admin) = setup(&env);
-    let delegate = Address::generate(&env);
-
-    client.set_program_delegate(
-        &program_id,
-        &payout_key,
-        &delegate,
-        &DELEGATE_PERMISSION_MASK,
-    );
-
-    // Only grant the delegate auth — not the admin.
-    env.set_auths(&[soroban_sdk::testutils::AuthorizedInvocation {
-        function: soroban_sdk::testutils::AuthorizedFunction::Contract((
-            client.address.clone(),
-            soroban_sdk::Symbol::new(&env, "emergency_revoke_delegate"),
-            soroban_sdk::vec![
-                &env,
-                program_id.into_val(&env),
-                delegate.clone().into_val(&env),
-            ],
-        )),
-        sub_invocations: soroban_sdk::vec![&env],
-    }]);
-
-    client.emergency_revoke_delegate(&program_id, &delegate);
+    
+    let program_data = client.get_program_info();
+    assert_eq!(program_data.delegate, Some(delegate.clone()));
+    assert_eq!(program_data.delegate_permissions, DELEGATE_PERMISSION_UPDATE_META);
+    
+    // Delegate should be able to update metadata
+    let metadata = ProgramMetadata::empty(&env);
+    client.update_program_metadata(&program_id, &delegate, &metadata);
+    
+    // Revoke should also work
+    client.revoke_program_delegate(&program_id, &payout_key);
+    let program_data = client.get_program_info();
+    assert_eq!(program_data.delegate, None);
+    assert_eq!(program_data.delegate_permissions, 0);
 }

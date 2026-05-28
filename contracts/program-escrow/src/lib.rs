@@ -3466,6 +3466,11 @@ impl ProgramEscrowContract {
     ) -> Address {
         caller.require_auth();
 
+        // Reject delegate actions on programs in Draft status
+        if program_data.status == ProgramStatus::Draft {
+            panic!("Cannot perform delegate actions on program in Draft status");
+        }
+
         if *caller == program_data.authorized_payout_key {
             return caller.clone();
         }
@@ -3531,6 +3536,12 @@ impl ProgramEscrowContract {
         Self::validate_delegate_permissions(permissions);
 
         let mut program_data = Self::get_program_data_by_id(&env, &program_id);
+        
+        // Reject delegate operations on programs in Draft status
+        if program_data.status == ProgramStatus::Draft {
+            panic!("Cannot set delegate on program in Draft status");
+        }
+        
         let updated_by = Self::require_program_owner_or_admin(&env, &program_data, &caller);
 
         if delegate == program_data.authorized_payout_key {
@@ -3558,6 +3569,12 @@ impl ProgramEscrowContract {
 
     pub fn revoke_program_delegate(env: Env, program_id: String, caller: Address) -> ProgramData {
         let mut program_data = Self::get_program_data_by_id(&env, &program_id);
+        
+        // Reject delegate operations on programs in Draft status
+        if program_data.status == ProgramStatus::Draft {
+            panic!("Cannot revoke delegate on program in Draft status");
+        }
+        
         let revoked_by = Self::require_program_owner_or_admin(&env, &program_data, &caller);
         let delegate = program_data.delegate.clone().unwrap_or(revoked_by.clone());
 
